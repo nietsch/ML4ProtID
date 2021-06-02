@@ -1,0 +1,43 @@
+Proteins: 13256
+Peptides: 281814
+Processed peptides: 281814
+Peptide identification engine: SIMPLESEARCHENGINE
+Enzyme: Trypsin
+Mapping 39566 peptides to 13256 proteins.
+Searching with up to 3 ambiguous amino acid(s) and 0 mismatch(es)!
+Building trie ... done (0s)
+Merge took: 0.00 s (wall), 0.01 s (CPU), 0.00 s (system), 0.01 s (user)
+Memory usage (Aho-Corasick): 92 MB (working set delta), 117 MB (peak working set delta)
+
+
+Aho-Corasick done:
+  found 44727 hits for 39566 of 39566 peptides.
+Peptide hits passing enzyme filter: 44727
+     ... rejected by enzyme filter: 218
+-----------------------------------
+Peptide statistics
+
+  unmatched                : 0 (0 %)
+  target/decoy:
+    match to target DB only: 28550 (72 %)
+    match to decoy DB only : 11016 (27 %)
+    match to both          : 0 (0 %)
+
+  mapping to proteins:
+    no match (to 0 protein)         : 0
+    unique match (to 1 protein)     : 37841
+    non-unique match (to >1 protein): 1725
+-----------------------------------
+Protein statistics
+
+  total proteins searched: 13256
+  matched proteins       : 9471 (9471 new)
+  matched target proteins: 5119 (54 %)
+  matched decoy proteins : 4352 (45 %)
+  orphaned proteins      : 0 (all removed)
+-----------------------------------
+Omitted writing of 24111 peptide identifications due to empty hits.
+
+
+Hits before filtering: 39566
+Hits after filtering (without Percolator): 15455
