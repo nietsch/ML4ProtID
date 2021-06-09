@@ -125,8 +125,8 @@ def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
     # Command with pin and weight outputs
     """
     percadapter_command = percadapter_path + " -in " + sse_results + " -out sse_results_percolated.idXML " + \
-                          "-percolator_executable " + perc_path + " -out_pin SSE_results_percolated.tab " + \
-                          "-weights SSE_results_percolated.weights -train_best_positive -score_type q-value " + \
+                          "-percolator_executable " + perc_path + " -out_pin sse_results_percolated.tab " + \
+                          "-weights sse_results_percolated.weights -train_best_positive -score_type q-value " + \
                           "-generic_feature_set"
     """
 
