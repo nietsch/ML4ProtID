@@ -2,6 +2,7 @@ import os
 from CTDopts.CTDopts import CTDModel
 from CTDsupport import *
 from pyopenms import *
+import pandas as pd
 
 
 def main():
@@ -36,6 +37,16 @@ def main():
         description="Target/Decoy database file"
     )
 
+    # Register file containing predicted intensities (Prosit output in generic text format)
+    model.add(
+        "predicted_intensities",
+        required=True,
+        type="input-file",
+        is_list=False,
+        file_formats=["generic"],
+        description="Generic text file containing predicted peak intensities (Prosit output)"
+    )
+
     # Register path to Percolator executable, needed by OpenMS tool PercolatorAdapter
     model.add(
         "percolator_path",
@@ -54,6 +65,7 @@ def main():
         description="Path to PercolatorAdapter executable"
     )
 
+    # Register output file name (FDR filtered idXML file)
     model.add(
         "output",
         required=True,
@@ -74,6 +86,7 @@ def main():
     # Set the arguments
     searchfile = arg_dict["input"]
     database = arg_dict["database"]
+    predicted_intensities = arg_dict["predicted_intensities"]
     perc_path = arg_dict["percolator_path"]
     percadapter_path = arg_dict["percolator_adapter_path"]
     outfile = arg_dict["output"]
@@ -83,7 +96,13 @@ def main():
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
 
-    # TODO: Integrate predicted intensities
+    # Generate theoretical spectra for the hits found by database search
+    theoretical_exp = theoretical_spectra(peptide_ids)
+
+    # Integrate predicted intensities to theoretical spectra
+    theoretical_exp_intensities =  integrate_intensities(predicted_intensities, theoretical_exp)
+
+    # TODO: Spectrum alignment
 
     # Run PercolatorAdapter
     perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_file, perc_path, percadapter_path)
@@ -113,6 +132,88 @@ def sse_algorithm(searchfile: str, database: str):
     simplesearch.search(searchfile, database, protein_ids, peptide_ids)
 
     return protein_ids, peptide_ids
+
+
+def theoretical_spectra(peptide_ids: list):
+    # Generate theoretical spectra
+
+    tsg = TheoreticalSpectrumGenerator()
+    theoretical_exp = MSExperiment()
+
+    for p in peptide_ids:
+        for hit in p.getHits():
+            spec = MSSpectrum()
+            sequence = str(hit.getSequence())
+
+            # Remove Carbamidomethyl notation after C's, since each C is treated as being carbamidomethylated in Prosit
+            sequence = sequence.replace("(Carbamidomethyl)", "")
+
+            # Ensure accordance with Prosit output (sequences with length > 30 are excluded)
+            if len(sequence.replace("Oxidation", "ox")) <= 30:
+                peptide = AASequence.fromString(sequence)
+
+                p = Param()
+                p.setValue("add_b_ions", "true")
+                p.setValue("add_metainfo", "true")
+
+                tsg.setParameters(p)
+                tsg.getSpectrum(spec, peptide, 1, 1)
+
+                print("Spectrum 1 of", peptide, "has", spec.size(), "peaks.")
+
+                theoretical_exp.addSpectrum(spec)
+
+    return theoretical_exp
+
+
+def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
+    # Parse Prosit output (given in generic text format)
+
+    df = pd.read_csv(generic_out)
+
+    # Get all rows (i.e. ions) associated with a hit and store them as an element in a list in order to have a better
+    # access to needed values in the following mapping step
+    predicted_peaks = []
+    tmpspec = []
+    tmp = df.at[0, 'PrecursorMz']
+
+    for i, r in df.iterrows():
+
+        if r['PrecursorMz'] != tmp:
+            predicted_peaks.append(tmpspec)
+            tmpspec = []
+            tmp = df.at[i, 'PrecursorMz']
+            continue
+
+        tmpspec.append(r)
+        tmp = r['PrecursorMz']
+
+    predicted_peaks.append(tmpspec)
+
+    # Map the predicted intensities to the respective peaks by matching the fragment types and numbers
+    # Store the adjusted spectra in a new experiment
+    ints_added_exp = MSExperiment()
+    idx = 0
+
+    for s in theoretical_exp:
+
+        pred_mz = []
+        pred_int = []
+
+        for ion, peak in zip(s.getStringDataArrays()[0], s):
+            for r in predicted_peaks[idx]:
+                if ion.decode()[0] == r['FragmentType'] \
+                        and int(ion.decode()[1:len(ion.decode()) - 1]) == r['FragmentNumber'] \
+                        and r['FragmentCharge'] == 1:
+                    pred_mz.append(peak.getMZ())
+                    pred_int.append(r['RelativeIntensity'])
+
+        s.set_peaks((pred_mz, pred_int))
+        ints_added_exp.addSpectrum(s)
+
+        idx += 1
+
+    return ints_added_exp
 
 
 def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
