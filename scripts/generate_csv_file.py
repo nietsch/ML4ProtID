@@ -7,7 +7,7 @@ from pyopenms import *
 protein_ids = []
 peptide_ids = []
 
-IdXMLFile().load("SSE_results.idXML", protein_ids, peptide_ids)
+IdXMLFile().load("../CTD_files/sse_results.idXML", protein_ids, peptide_ids)
 
 # Set the collision energy
 collision_energy = 27
@@ -22,10 +22,6 @@ with open('prosit_input_test.csv', 'w') as f:
     # Write the header
     writer.writerow(header)
 
-    # Initialize array containing rows
-    # -> Not necessary if no filtering is needed
-    # rows = []
-
     # Iterate over the hits and write the rows containing the respective values
     for p in peptide_ids:
         for h in p.getHits():
@@ -38,21 +34,10 @@ with open('prosit_input_test.csv', 'w') as f:
             sequence = sequence.replace("(Carbamidomethyl)", "")
 
             # Skip sequences exceeding the limit of 30 amino acids (prevent Prosit error)
-            if len(sequence) > 30:
+            if len(sequence.replace("ox", "")) > 30:
                 continue
 
             row = [sequence, collision_energy, h.getCharge()]
 
-            # Avoid redundancy: Only append if row not already given
-            # -> Omit this filtering in order to keep the respective order to allow the correct assignment of the
-            # intensities
-            #if row not in rows:
-            #    rows.append(row)
-
             # Write respective row to csv file
             writer.writerow(row)
-
-    # Write rows to csv file
-    # for r in rows:
-    #    writer.writerow(r)
-
