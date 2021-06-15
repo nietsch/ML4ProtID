@@ -149,7 +149,7 @@ def theoretical_spectra(peptide_ids: list):
             sequence = sequence.replace("(Carbamidomethyl)", "")
 
             # Ensure accordance with Prosit output (sequences with length > 30 are excluded)
-            if len(sequence.replace("Oxidation", "ox")) <= 30:
+            if len(sequence.replace("Oxidation", "")) <= 30:
                 peptide = AASequence.fromString(sequence)
 
                 p = Param()
@@ -157,9 +157,9 @@ def theoretical_spectra(peptide_ids: list):
                 p.setValue("add_metainfo", "true")
 
                 tsg.setParameters(p)
-                tsg.getSpectrum(spec, peptide, 1, 1)
 
-                print("Spectrum 1 of", peptide, "has", spec.size(), "peaks.")
+                # Generate ions with a maximum charge of 3
+                tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge(), 3))
 
                 theoretical_exp.addSpectrum(spec)
 
@@ -168,6 +168,7 @@ def theoretical_spectra(peptide_ids: list):
 
 def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
     # Parse Prosit output (given in generic text format)
+    # TODO: Work with dictionary instead of list for faster lookup
 
     df = pd.read_csv(generic_out)
 
@@ -203,8 +204,9 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
         for ion, peak in zip(s.getStringDataArrays()[0], s):
             for r in predicted_peaks[idx]:
                 if ion.decode()[0] == r['FragmentType'] \
-                        and int(ion.decode()[1:len(ion.decode()) - 1]) == r['FragmentNumber'] \
-                        and r['FragmentCharge'] == 1:
+                        and int(ion.decode()[1:].split('+', 1)[0]) == r['FragmentNumber'] \
+                        and ion.decode().count('+') == r['FragmentCharge']:
+
                     pred_mz.append(peak.getMZ())
                     pred_int.append(r['RelativeIntensity'])
 
@@ -258,7 +260,6 @@ def fdr_filtering(database: str, peptide_ids: list):
     idfilter.removeDecoyHits(peptide_ids)
 
     return peptide_ids
-
 
 
 if __name__ == "__main__":
