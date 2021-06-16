@@ -96,13 +96,19 @@ def main():
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
 
-    # Generate theoretical spectra for the hits found by database search
-    theoretical_exp = theoretical_spectra(peptide_ids)
+    # Generate theoretical spectra for the (filtered) hits found by database search
+    peptide_ids_filtered = filter_peptides(peptide_ids)
+    theoretical_exp = theoretical_spectra(peptide_ids_filtered)
 
     # Integrate predicted intensities to theoretical spectra
-    theoretical_exp_intensities =  integrate_intensities(predicted_intensities, theoretical_exp)
+    theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
-    # TODO: Spectrum alignment
+    # Align experimental and theoretical spectra
+    experimental_exp = MSExperiment()
+    MzMLFile().load(searchfile, experimental_exp)
+    spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
+
+    # TODO: Compute and add new meta value to hits
 
     # Run PercolatorAdapter
     perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_file, perc_path, percadapter_path)
@@ -134,6 +140,28 @@ def sse_algorithm(searchfile: str, database: str):
     return protein_ids, peptide_ids
 
 
+def filter_peptides(peptide_ids: list):
+    # Filter peptides according to peptide sequence length limit of Prosit
+    peptide_ids_filtered = []
+
+    for p in peptide_ids:
+        hits = []
+        for h in p.getHits():
+            sequence = str(h.getSequence())
+
+            # Skip sequences exceeding the limit of 30 amino acids
+            if len(h.getSequence().toUnmodifiedString()) > 30:
+                continue
+
+            hits.append(h)
+
+        p.setHits(hits)
+        if hits:
+            peptide_ids_filtered.append(p)
+
+    return peptide_ids_filtered
+
+
 def theoretical_spectra(peptide_ids: list):
     # Generate theoretical spectra
 
@@ -145,23 +173,18 @@ def theoretical_spectra(peptide_ids: list):
             spec = MSSpectrum()
             sequence = str(hit.getSequence())
 
-            # Remove Carbamidomethyl notation after C's, since each C is treated as being carbamidomethylated in Prosit
-            sequence = sequence.replace("(Carbamidomethyl)", "")
+            peptide = AASequence.fromString(sequence)
 
-            # Ensure accordance with Prosit output (sequences with length > 30 are excluded)
-            if len(sequence.replace("Oxidation", "")) <= 30:
-                peptide = AASequence.fromString(sequence)
+            p = Param()
+            p.setValue("add_b_ions", "true")
+            p.setValue("add_metainfo", "true")
 
-                p = Param()
-                p.setValue("add_b_ions", "true")
-                p.setValue("add_metainfo", "true")
+            tsg.setParameters(p)
 
-                tsg.setParameters(p)
+            # Generate ions with a maximum charge of 3
+            tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge(), 3))
 
-                # Generate ions with a maximum charge of 3
-                tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge(), 3))
-
-                theoretical_exp.addSpectrum(spec)
+            theoretical_exp.addSpectrum(spec)
 
     return theoretical_exp
 
@@ -216,6 +239,49 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
         idx += 1
 
     return ints_added_exp
+
+
+def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensities: MSExperiment, peptide_ids: list):
+    # Align experimental and theoretical spectra
+
+    # Create dictionary for assigning indices to spectra native IDs
+    spectrum_index = 0
+    native_id2spectrum_index = dict()
+
+    for s in experimental_exp.getSpectra():
+        native_id2spectrum_index[s.getNativeID()] = spectrum_index
+        spectrum_index += 1
+
+    # Match experimental spectra and (filtered) db search results in order to allow spectrum alignment
+    for pep_idx, pep in enumerate(peptide_ids):
+
+        ident_native_id = pep.getMetaValue("spectrum_reference")
+        spectrum_index = native_id2spectrum_index[ident_native_id]
+
+        if experimental_exp[spectrum_index].getNativeID() == ident_native_id:
+            alignment = []
+            spa = SpectrumAlignment()
+            p = spa.getParameters()
+            p.setValue(b'tolerance', 0.2)
+            p.setValue(b'is_relative_tolerance', b'false')
+            spa.setParameters(p)
+
+            spec_theo = theoretical_exp_intensities[pep_idx]
+            spec_exp = experimental_exp[spectrum_index]
+
+            spa.getSpectrumAlignment(alignment, spec_theo, spec_exp)
+
+            # Print out matched peaks
+            """
+            print("Matched peaks: " + str(len(alignment)))
+            print("ion\ttheo. m/z\tobserved m/z")
+            for theo_idx, obs_idx in alignment:
+                print(spec_theo.getStringDataArrays()[0][theo_idx].decode() + "\t" +
+                    str(spec_theo[theo_idx].getMZ()) + "\t" +
+                    str(spec_exp[obs_idx].getMZ()))
+            """
+
+            # TODO: Continue
 
 
 def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
