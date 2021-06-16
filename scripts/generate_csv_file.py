@@ -34,7 +34,7 @@ with open('prosit_input_test.csv', 'w') as f:
             sequence = sequence.replace("(Carbamidomethyl)", "")
 
             # Skip sequences exceeding the limit of 30 amino acids (prevent Prosit error)
-            if len(sequence.replace("ox", "")) > 30:
+            if len(h.getSequence().toUnmodifiedString()) > 30:
                 continue
 
             row = [sequence, collision_energy, h.getCharge()]
