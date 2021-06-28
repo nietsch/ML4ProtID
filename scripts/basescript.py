@@ -95,6 +95,7 @@ def main():
     protein_ids, peptide_ids = sse_algorithm(searchfile, database)
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
+    # Storage not longer needed as soon as percolator will be run with idXML file containing additional meta values
 
     # Generate theoretical spectra for the (filtered) hits found by database search
     peptide_ids_filtered = filter_peptides(peptide_ids)
@@ -103,12 +104,14 @@ def main():
     # Integrate predicted intensities to theoretical spectra
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
-    # Align experimental and theoretical spectra
+    # Align experimental and theoretical spectra, add spectral angle as additional meta value
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
-    spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
+    peptide_ids_sa = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
+    sse_res_sa_file = "sse_results_sa.idXML"
+    IdXMLFile().store(sse_res_sa_file, protein_ids, peptide_ids_sa)
 
-    # TODO: Compute and add new meta value to hits
+    # TODO: Compute and add sum of squares score as additional meta value
 
     # Run PercolatorAdapter
     perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_file, perc_path, percadapter_path)
@@ -182,7 +185,7 @@ def theoretical_spectra(peptide_ids: list):
             tsg.setParameters(p)
 
             # Generate ions with a maximum charge of 3
-            tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge(), 3))
+            tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge()-1, 3))
 
             theoretical_exp.addSpectrum(spec)
 
@@ -262,8 +265,8 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
             alignment = []
             spa = SpectrumAlignment()
             p = spa.getParameters()
-            p.setValue(b'tolerance', 0.2)
-            p.setValue(b'is_relative_tolerance', b'false')
+            p.setValue(b'tolerance', 20.0) # Tolerance of 20ppm
+            p.setValue(b'is_relative_tolerance', b'true')
             spa.setParameters(p)
 
             spec_theo = theoretical_exp_intensities[pep_idx]
@@ -271,17 +274,80 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
 
             spa.getSpectrumAlignment(alignment, spec_theo, spec_exp)
 
-            # Print out matched peaks
-            """
-            print("Matched peaks: " + str(len(alignment)))
-            print("ion\ttheo. m/z\tobserved m/z")
-            for theo_idx, obs_idx in alignment:
-                print(spec_theo.getStringDataArrays()[0][theo_idx].decode() + "\t" +
-                    str(spec_theo[theo_idx].getMZ()) + "\t" +
-                    str(spec_exp[obs_idx].getMZ()))
-            """
 
-            # TODO: Continue
+            # Spectral angle calculation
+            # Fill the two vectors with intensity values
+            peptide_len = 0
+            len_vector = 0
+
+            # Set length of the vectors
+            for hit in pep.getHits():
+                peptide_len = len(hit.getSequence().toUnmodifiedString()) - 1
+                len_vector = peptide_len * min(hit.getCharge() - 1, 3) * 2
+
+            # Initialize vectors with zeros
+            v_theo = np.zeros(len_vector)
+            v_exp = np.zeros(len_vector)
+
+            # Print out matched peaks
+            # print("Matched peaks: " + str(len(alignment)))
+            # print("ion\ttheo. m/z\ttheo. int.\tobserved m/z\t observed int.")
+            for theo_idx, obs_idx in alignment:
+                # print(hit.getSequence().toUnmodifiedString(), hit.getSequence())
+                # print(spec_theo.getStringDataArrays()[0][theo_idx].decode() + "\t" +
+                #      str(spec_theo[theo_idx].getMZ()) + "\t" +
+                #      str(spec_theo[theo_idx].getIntensity()) + "\t" +
+                #      str(spec_exp[obs_idx].getMZ()) + "\t" +
+                #      str(spec_exp[obs_idx].getIntensity()))
+
+                # Get ion and determine index shift in vector
+                ion = spec_theo.getStringDataArrays()[0][theo_idx].decode()
+                charge_shift = ((ion.count('+') - 1) * peptide_len)
+
+                # Set respective index in the vectors
+                int_idx = 0
+                if ion[0] == 'b':
+                    int_idx = (int(ion[1:].split('+', 1)[0]) - 1) + charge_shift
+                # Store y-ion intensities in the 2nd half of the array
+                else:
+                    int_idx = (int(ion[1:].split('+', 1)[0]) - 1) + charge_shift + int(len_vector / 2)
+
+                # Write intensity values to the vectors
+                v_theo[int_idx] = spec_theo[theo_idx].getIntensity()
+                v_exp[int_idx] = spec_exp[obs_idx].getIntensity()
+
+            # Normalize vectors with L2 norm
+            # Avoid division by zero problems by checking if arrays are empty
+            if v_theo.any():
+                v_theo_norm = v_theo / np.linalg.norm(v_theo)
+            else:
+                v_theo_norm = v_theo
+
+            if v_exp.any():
+                v_exp_norm = v_exp / np.linalg.norm(v_exp)
+            else:
+                v_exp_norm = v_exp
+
+            # Compute dot product
+            v_dot = np.dot(v_theo_norm, v_exp_norm)
+
+            # Compute inverse cosine
+            v_inv_cos = np.arccos(v_dot)
+
+            # Compute spectral angle
+            sa = 1 - 2 * (v_inv_cos / np.pi)
+
+
+        # Add spectral angle for each hit as new meta value
+        new_hits = []
+        for hit in pep.getHits():
+            hit.setMetaValue('spectral_angle', sa)
+
+            new_hits.append(hit)
+
+        pep.setHits(new_hits)
+
+    return peptide_ids
 
 
 def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
