@@ -95,7 +95,7 @@ def main():
     protein_ids, peptide_ids = sse_algorithm(searchfile, database)
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
-    # Storage not longer needed as soon as percolator will be run with idXML file containing additional meta values
+    # Storage no longer needed as soon as percolator will be run with idXML file containing additional meta values
 
     # Generate theoretical spectra for the (filtered) hits found by database search
     peptide_ids_filtered = filter_peptides(peptide_ids)
@@ -104,14 +104,14 @@ def main():
     # Integrate predicted intensities to theoretical spectra
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
-    # Align experimental and theoretical spectra, add spectral angle as additional meta value
+    # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
-    peptide_ids_sa = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
-    sse_res_sa_file = "sse_results_sa.idXML"
-    IdXMLFile().store(sse_res_sa_file, protein_ids, peptide_ids_sa)
+    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
+    sse_res_add_vals_file = "sse_results_add_vals.idXML"
+    IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
-    # TODO: Compute and add sum of squares score as additional meta value
+    # TODO: Run Percolator on idXML file with added meta values, compare results
 
     # Run PercolatorAdapter
     perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_file, perc_path, percadapter_path)
@@ -246,6 +246,7 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
 
 def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensities: MSExperiment, peptide_ids: list):
     # Align experimental and theoretical spectra
+    # Compute and add spectral angle and MSE as new meta values
 
     # Create dictionary for assigning indices to spectra native IDs
     spectrum_index = 0
@@ -338,10 +339,18 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
             sa = 1 - 2 * (v_inv_cos / np.pi)
 
 
-        # Add spectral angle for each hit as new meta value
+            # Compute mean squared error MSE
+            squared_diff = [(theo_int - exp_int) ** 2 for theo_int, exp_int in zip(v_theo_norm, v_exp_norm)]
+            mse = 1.0 # if there are no matching peaks, maybe choose another value?
+            if len(alignment) > 0:
+                mse = sum(squared_diff) / len(alignment)
+
+
+        # Add spectral angle and MSE for each hit as new meta values
         new_hits = []
         for hit in pep.getHits():
             hit.setMetaValue('spectral_angle', sa)
+            hit.setMetaValue('mse', mse)
 
             new_hits.append(hit)
 
