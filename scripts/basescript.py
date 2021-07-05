@@ -95,11 +95,10 @@ def main():
     protein_ids, peptide_ids = sse_algorithm(searchfile, database)
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
-    # Storage no longer needed as soon as percolator will be run with idXML file containing additional meta values
+    # Storage of search results necessary in order to generate Prosit input (csv) file
 
-    # Generate theoretical spectra for the (filtered) hits found by database search
-    peptide_ids_filtered = filter_peptides(peptide_ids)
-    theoretical_exp = theoretical_spectra(peptide_ids_filtered)
+    # Generate theoretical spectra for the hits found by database search
+    theoretical_exp = theoretical_spectra(peptide_ids)
 
     # Integrate predicted intensities to theoretical spectra
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
@@ -107,7 +106,7 @@ def main():
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
-    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids_filtered)
+    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
@@ -136,33 +135,14 @@ def sse_algorithm(searchfile: str, database: str):
     score_annot = [b'fragment_mz_error_median_ppm', b'precursor_mz_error_ppm']
     params.setValue(b'annotate:PSM', score_annot)
 
+    # Only include peptides of up to 30 amino acids (Prosit limit)
+    params.setValue(b'peptide:max_size', 30)
+
     simplesearch.setParameters(params)
 
     simplesearch.search(searchfile, database, protein_ids, peptide_ids)
 
     return protein_ids, peptide_ids
-
-
-def filter_peptides(peptide_ids: list):
-    # Filter peptides according to peptide sequence length limit of Prosit
-    peptide_ids_filtered = []
-
-    for p in peptide_ids:
-        hits = []
-        for h in p.getHits():
-            sequence = str(h.getSequence())
-
-            # Skip sequences exceeding the limit of 30 amino acids
-            if len(h.getSequence().toUnmodifiedString()) > 30:
-                continue
-
-            hits.append(h)
-
-        p.setHits(hits)
-        if hits:
-            peptide_ids_filtered.append(p)
-
-    return peptide_ids_filtered
 
 
 def theoretical_spectra(peptide_ids: list):

@@ -7,7 +7,7 @@ from pyopenms import *
 protein_ids = []
 peptide_ids = []
 
-IdXMLFile().load("../CTD_files/sse_results.idXML", protein_ids, peptide_ids)
+IdXMLFile().load("sse_results.idXML", protein_ids, peptide_ids)
 
 # Set the collision energy
 collision_energy = 27
@@ -16,7 +16,7 @@ collision_energy = 27
 header = ['modified_sequence', 'collision_energy', 'precursor_charge']
 
 # Write the csv file serving as input for Prosit
-with open('prosit_input_test.csv', 'w') as f:
+with open('prosit_input.csv', 'w') as f:
     writer = csv.writer(f)
 
     # Write the header
@@ -32,10 +32,6 @@ with open('prosit_input_test.csv', 'w') as f:
 
             # Remove (Carbamidomethyl) notation after cysteins, since each C is treated as C with carbamidomethylation
             sequence = sequence.replace("(Carbamidomethyl)", "")
-
-            # Skip sequences exceeding the limit of 30 amino acids (prevent Prosit error)
-            if len(h.getSequence().toUnmodifiedString()) > 30:
-                continue
 
             row = [sequence, collision_energy, h.getCharge()]
 
