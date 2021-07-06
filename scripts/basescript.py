@@ -107,7 +107,7 @@ def main():
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
-    peptide_ids_add_vals = spectrum_alignment(normalized_int_exp, theoretical_exp_intensities, peptide_ids)
+    peptide_ids_add_vals = spectrum_alignment(normalized_int_exp, theoretical_exp_intensities, protein_ids, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
@@ -250,9 +250,15 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
     return ints_added_exp
 
 
-def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensities: MSExperiment, peptide_ids: list):
+def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensities: MSExperiment, protein_ids: list,
+                       peptide_ids: list):
     # Align experimental and theoretical spectra
     # Compute and add spectral angle and MSE as new meta values
+
+    # Set extra features in order to add additional values for PercolatorAdapter
+    search_parameters = protein_ids[0].getSearchParameters()
+    search_parameters.setMetaValue(b'extra_features', b'score,spectral_angle,mse')
+    protein_ids[0].setSearchParameters(search_parameters)
 
     # Create dictionary for assigning indices to spectra native IDs
     spectrum_index = 0
