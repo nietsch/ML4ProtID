@@ -91,8 +91,11 @@ def main():
     percadapter_path = arg_dict["percolator_adapter_path"]
     outfile = arg_dict["output"]
 
-    # Run the database search, store results to idXML file
-    protein_ids, peptide_ids = sse_algorithm(searchfile, database)
+    # Run the database search on experimental spectra with normalized intensity values, store results to idXML file
+    normalized_int_exp = norm_intensities(searchfile)
+    searchfile_norm = "exp_spectra_norm_int.mzML"
+    MzMLFile().store(searchfile_norm, normalized_int_exp)
+    protein_ids, peptide_ids = sse_algorithm(searchfile_norm, database)
     sse_res_file = "sse_results.idXML"
     IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
     # Storage of search results necessary in order to generate Prosit input (csv) file
@@ -104,9 +107,7 @@ def main():
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
-    experimental_exp = MSExperiment()
-    MzMLFile().load(searchfile, experimental_exp)
-    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids)
+    peptide_ids_add_vals = spectrum_alignment(normalized_int_exp, theoretical_exp_intensities, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
@@ -120,6 +121,31 @@ def main():
 
     # Store result
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
+
+
+def norm_intensities(searchfile: str):
+    # Normalize the peak intensities in the experimental spectra
+
+    experimental_exp = MSExperiment()
+    MzMLFile().load(searchfile, experimental_exp)
+
+    normalized_int_exp = MSExperiment()
+
+    for s in experimental_exp:
+        mz_vals = []
+        norm_int = []
+
+        ints = [peak.getIntensity() for peak in s]
+        max_val = max(ints)
+
+        for peak in s:
+            mz_vals.append(peak.getMZ())
+            norm_int.append(peak.getIntensity() / max_val)
+
+        s.set_peaks((mz_vals, norm_int))
+        normalized_int_exp.addSpectrum(s)
+
+    return normalized_int_exp
 
 
 def sse_algorithm(searchfile: str, database: str):
@@ -319,9 +345,9 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
             sa = 1 - 2 * (v_inv_cos / np.pi)
 
 
-            # Compute mean squared error MSE
-            squared_diff = [(theo_int - exp_int) ** 2 for theo_int, exp_int in zip(v_theo_norm, v_exp_norm)]
-            mse = 1.0 # if there are no matching peaks, maybe choose another value?
+            # Compute mean squared error
+            squared_diff = [(theo_int - exp_int) ** 2 for theo_int, exp_int in zip(v_theo, v_exp)]
+            mse = 1.0 # If there are no matching peaks
             if len(alignment) > 0:
                 mse = sum(squared_diff) / len(alignment)
 
