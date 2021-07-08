@@ -4,7 +4,6 @@ from CTDsupport import *
 from pyopenms import *
 import pandas as pd
 
-
 def main():
 
     # register command line arguments
@@ -96,8 +95,7 @@ def main():
     searchfile_norm = "exp_spectra_norm_int.mzML"
     MzMLFile().store(searchfile_norm, normalized_int_exp)
     protein_ids, peptide_ids = sse_algorithm(searchfile_norm, database)
-    sse_res_file = "sse_results.idXML"
-    IdXMLFile().store(sse_res_file, protein_ids, peptide_ids)
+    IdXMLFile().store("sse_results.idXML", protein_ids, peptide_ids)
     # Storage of search results necessary in order to generate Prosit input (csv) file
 
     # Generate theoretical spectra for the hits found by database search
@@ -111,10 +109,8 @@ def main():
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
-    # TODO: Run Percolator on idXML file with added meta values, compare results
-
     # Run PercolatorAdapter
-    perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_file, perc_path, percadapter_path)
+    perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_add_vals_file, perc_path, percadapter_path)
 
     # FDR filtering
     perc_peptide_ids_filtered = fdr_filtering(database, perc_peptide_ids)
@@ -200,7 +196,6 @@ def theoretical_spectra(peptide_ids: list):
 
 def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
     # Parse Prosit output (given in generic text format)
-    # TODO: Work with dictionary instead of list for faster lookup
 
     df = pd.read_csv(generic_out)
 
@@ -375,16 +370,8 @@ def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
 
     # Define the command for the PercolatorAdapter run
     percadapter_command = percadapter_path + " -in " + sse_results + " -out sse_results_percolated.idXML " + \
-                          "-percolator_executable " + perc_path + " -train_best_positive -score_type q-value " + \
-                          "-generic_feature_set"
-
-    # Command with pin and weight outputs
-    """
-    percadapter_command = percadapter_path + " -in " + sse_results + " -out sse_results_percolated.idXML " + \
                           "-percolator_executable " + perc_path + " -out_pin sse_results_percolated.tab " + \
-                          "-weights sse_results_percolated.weights -train_best_positive -score_type q-value " + \
-                          "-generic_feature_set"
-    """
+                          "-weights sse_results_percolated.weights -train_best_positive -score_type q-value "
 
     os.system(percadapter_command)
 
