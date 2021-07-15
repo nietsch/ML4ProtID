@@ -90,11 +90,8 @@ def main():
     percadapter_path = arg_dict["percolator_adapter_path"]
     outfile = arg_dict["output"]
 
-    # Run the database search on experimental spectra with normalized intensity values, store results to idXML file
-    normalized_int_exp = norm_intensities(searchfile)
-    searchfile_norm = "exp_spectra_norm_int.mzML"
-    MzMLFile().store(searchfile_norm, normalized_int_exp)
-    protein_ids, peptide_ids = sse_algorithm(searchfile_norm, database)
+    # Run the database search on experimental spectra, store results to idXML file
+    protein_ids, peptide_ids = sse_algorithm(searchfile, database)
     IdXMLFile().store("sse_results.idXML", protein_ids, peptide_ids)
     # Storage of search results necessary in order to generate Prosit input (csv) file
 
@@ -105,7 +102,9 @@ def main():
     theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
-    peptide_ids_add_vals = spectrum_alignment(normalized_int_exp, theoretical_exp_intensities, protein_ids, peptide_ids)
+    experimental_exp = MSExperiment()
+    MzMLFile().load(searchfile, experimental_exp)
+    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
@@ -117,31 +116,6 @@ def main():
 
     # Store result
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
-
-
-def norm_intensities(searchfile: str):
-    # Normalize the peak intensities in the experimental spectra
-
-    experimental_exp = MSExperiment()
-    MzMLFile().load(searchfile, experimental_exp)
-
-    normalized_int_exp = MSExperiment()
-
-    for s in experimental_exp:
-        mz_vals = []
-        norm_int = []
-
-        ints = [peak.getIntensity() for peak in s]
-        max_val = max(ints)
-
-        for peak in s:
-            mz_vals.append(peak.getMZ())
-            norm_int.append(peak.getIntensity() / max_val)
-
-        s.set_peaks((mz_vals, norm_int))
-        normalized_int_exp.addSpectrum(s)
-
-    return normalized_int_exp
 
 
 def sse_algorithm(searchfile: str, database: str):
@@ -170,9 +144,9 @@ def sse_algorithm(searchfile: str, database: str):
 def theoretical_spectra(peptide_ids: list):
     # Generate theoretical spectra
 
-    tsg = TheoreticalSpectrumGenerator()
     theoretical_exp = MSExperiment()
 
+    tsg = TheoreticalSpectrumGenerator()
     p = tsg.getParameters()
     p.setValue("add_first_prefix_ion", "true")
     p.setValue("add_metainfo", "true")
@@ -249,6 +223,10 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     # Align experimental and theoretical spectra
     # Compute and add spectral angle and MSE as new meta values
 
+    # Base peak normalize the peak intensities in the experimental spectra
+    normalizer = Normalizer()
+    normalizer.filterPeakMap(experimental_exp)
+
     # Set extra features in order to add additional values for PercolatorAdapter
     search_parameters = protein_ids[0].getSearchParameters()
     search_parameters.setMetaValue(b'extra_features', b'score,spectral_angle,mse')
@@ -262,6 +240,13 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
         native_id2spectrum_index[s.getNativeID()] = spectrum_index
         spectrum_index += 1
 
+    # Create spectrum alignment
+    spa = SpectrumAlignment()
+    p = spa.getParameters()
+    p.setValue(b'tolerance', 20.0)  # Tolerance of 20ppm
+    p.setValue(b'is_relative_tolerance', b'true')
+    spa.setParameters(p)
+
     # Match experimental spectra and (filtered) db search results in order to allow spectrum alignment
     for pep_idx, pep in enumerate(peptide_ids):
 
@@ -270,11 +255,6 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
 
         if experimental_exp[spectrum_index].getNativeID() == ident_native_id:
             alignment = []
-            spa = SpectrumAlignment()
-            p = spa.getParameters()
-            p.setValue(b'tolerance', 20.0) # Tolerance of 20ppm
-            p.setValue(b'is_relative_tolerance', b'true')
-            spa.setParameters(p)
 
             spec_theo = theoretical_exp_intensities[pep_idx]
             spec_exp = experimental_exp[spectrum_index]
@@ -384,11 +364,6 @@ def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
 
 
 def fdr_filtering(database: str, peptide_ids: list):
-    # Load fasta file
-    fasta_file = FASTAFile()
-    fasta_entries = []
-    fasta_file.load(database, fasta_entries)
-
     # Annotate q-value
     fdr = FalseDiscoveryRate()
     fdr.apply(peptide_ids)
