@@ -173,18 +173,17 @@ def theoretical_spectra(peptide_ids: list):
     tsg = TheoreticalSpectrumGenerator()
     theoretical_exp = MSExperiment()
 
+    p = tsg.getParameters()
+    p.setValue("add_first_prefix_ion", "true")
+    p.setValue("add_metainfo", "true")
+    tsg.setParameters(p)
+
     for p in peptide_ids:
         for hit in p.getHits():
             spec = MSSpectrum()
             sequence = str(hit.getSequence())
 
             peptide = AASequence.fromString(sequence)
-
-            p = Param()
-            p.setValue("add_b_ions", "true")
-            p.setValue("add_metainfo", "true")
-
-            tsg.setParameters(p)
 
             # Generate ions with a maximum charge of 3
             tsg.getSpectrum(spec, peptide, 1, min(hit.getCharge()-1, 3))
