@@ -104,7 +104,7 @@ def main():
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
-    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids)
+    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, protein_ids, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
