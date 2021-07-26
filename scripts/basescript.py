@@ -99,12 +99,12 @@ def main():
     theoretical_exp = theoretical_spectra(peptide_ids)
 
     # Integrate predicted intensities to theoretical spectra
-    theoretical_exp_intensities, ion_names = integrate_intensities(predicted_intensities, theoretical_exp)
+    theoretical_exp_intensities = integrate_intensities(predicted_intensities, theoretical_exp)
 
     # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
-    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids, ion_names)
+    peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, peptide_ids)
     sse_res_add_vals_file = "sse_results_add_vals.idXML"
     IdXMLFile().store(sse_res_add_vals_file, protein_ids, peptide_ids_add_vals)
 
@@ -112,7 +112,7 @@ def main():
     perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_add_vals_file, perc_path, percadapter_path)
 
     # FDR filtering
-    perc_peptide_ids_filtered = fdr_filtering(database, perc_peptide_ids)
+    perc_peptide_ids_filtered = fdr_filtering(perc_peptide_ids)
 
     # Store result
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
@@ -199,15 +199,13 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
     ints_added_exp = MSExperiment()
     idx = 0
 
-    # Store the ion names for ion matching during spectrum alignment
-    ion_names = []
-
     for s in theoretical_exp:
 
         pred_mz = []
         pred_int = []
 
-        ions = []
+        # Retain the StringDataArrays() after set_peaks call in order to access the ion names during spectrum alignment
+        s_array = s.getStringDataArrays()
 
         for ion, peak in zip(s.getStringDataArrays()[0], s):
             for r in predicted_peaks[idx]:
@@ -218,20 +216,19 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment):
                     pred_mz.append(peak.getMZ())
                     pred_int.append(r['RelativeIntensity'])
 
-                    ions.append(ion.decode())
-
-        ion_names.append(ions)
 
         s.set_peaks((pred_mz, pred_int))
+        s.setStringDataArrays(s_array)
+
         ints_added_exp.addSpectrum(s)
 
         idx += 1
 
-    return ints_added_exp, ion_names
+    return ints_added_exp
 
 
 def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensities: MSExperiment, protein_ids: list,
-                       peptide_ids: list, ion_names: list):
+                       peptide_ids: list):
     # Align experimental and theoretical spectra
     # Compute and add spectral angle and MSE as new meta values
 
@@ -255,7 +252,7 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     # Create spectrum alignment
     spa = SpectrumAlignment()
     p = spa.getParameters()
-    p.setValue(b'tolerance', 20.0)  # Tolerance of 20ppm
+    p.setValue(b'tolerance', 100.0)  # Tolerance of 100 ppm
     p.setValue(b'is_relative_tolerance', b'true')
     spa.setParameters(p)
 
@@ -263,6 +260,7 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     for pep_idx, pep in enumerate(peptide_ids):
 
         ident_native_id = pep.getMetaValue("spectrum_reference")
+        assert ident_native_id in native_id2spectrum_index
         spectrum_index = native_id2spectrum_index[ident_native_id]
 
         if experimental_exp[spectrum_index].getNativeID() == ident_native_id:
@@ -293,14 +291,14 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
             # print("ion\ttheo. m/z\ttheo. int.\tobserved m/z\t observed int.")
             for theo_idx, obs_idx in alignment:
                 # print(hit.getSequence().toUnmodifiedString(), hit.getSequence())
-                # print(ion_names[pep_idx][theo_idx] + "\t" +
+                # print(spec_theo.getStringDataArrays()[0][theo_idx].decode() + "\t" +
                 #      str(spec_theo[theo_idx].getMZ()) + "\t" +
                 #      str(spec_theo[theo_idx].getIntensity()) + "\t" +
                 #      str(spec_exp[obs_idx].getMZ()) + "\t" +
                 #      str(spec_exp[obs_idx].getIntensity()))
 
                 # Get ion and determine index shift in vector
-                ion = ion_names[pep_idx][theo_idx]
+                ion = spec_theo.getStringDataArrays()[0][theo_idx].decode()
                 charge_shift = ((ion.count('+') - 1) * peptide_len)
 
                 # Set respective index in the vectors
@@ -375,7 +373,7 @@ def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
     return perc_protein_ids, perc_peptide_ids
 
 
-def fdr_filtering(database: str, peptide_ids: list):
+def fdr_filtering(peptide_ids: list):
     # Annotate q-value
     fdr = FalseDiscoveryRate()
     fdr.apply(peptide_ids)
