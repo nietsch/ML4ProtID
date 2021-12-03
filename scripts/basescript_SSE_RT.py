@@ -1,3 +1,9 @@
+# Already running Prosit server needed
+# Example command:
+# python basescript_SSE_RT.py -input "searchfile.mzML" -database "TargDecoy.fasta"
+# -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_adapter_path ".../PercolatorAdapter"
+# -percolator_path ".../percolator" -output "output.idXML"
+
 import os
 from CTDopts.CTDopts import CTDModel
 from CTDsupport import *
@@ -12,12 +18,15 @@ def main():
     model = CTDModel(
         name="ML4ProtID",
         version="1.0",
-        description="Script for finding peptide candidates incorporating predicted theoretical peak intensities.",
+        description="Script for finding peptide candidates incorporating predicted theoretical peak intensities and"
+                    "retention times (Spectral angle, RT difference and absolute pred. RT as additional meta values). "
+                    "Database search using Simple Search Engine Algorithm. Rescoring with Percolator.",
         docurl="",
         category="",
         executableName="",
         executablePath=""
     )
+
     # Register input mzML
     model.add(
         "input",
@@ -47,18 +56,14 @@ def main():
         description="Number of top hits to keep for each spectrum. Default: 1"
     )
 
-    # Generate the generic file with this script instead
-    """
-    # Register file containing predicted intensities (Prosit output in generic text format)
+    # Register normalized collision energy considered in the peak intensity prediction with Prosit
     model.add(
-        "predicted_intensities",
-        required=True,
-        type="input-file",
+        "ce",
+        required=False,
         is_list=False,
-        file_formats=["generic"],
-        description="Generic text file containing predicted peak intensities (Prosit output)"
+        default=27,
+        description="Collision energy considered in peak intensity prediction (Prosit). Default: 27"
     )
-    """
 
     # Register IP of already running Prosit server
     model.add(
@@ -109,7 +114,7 @@ def main():
     searchfile = arg_dict["input"]
     database = arg_dict["database"]
     hits_per_spec = int(arg_dict["top_hits_per_spectrum"])
-    #predicted_intensities = arg_dict["predicted_intensities"]
+    ce = int(arg_dict["ce"])
     server_ip = arg_dict["prosit_server_ip"]
     perc_path = arg_dict["percolator_path"]
     percadapter_path = arg_dict["percolator_adapter_path"]
@@ -118,16 +123,16 @@ def main():
     # Run the database search on experimental spectra, store results to idXML file
     protein_ids, peptide_ids = sse_algorithm(searchfile, database, hits_per_spec)
     IdXMLFile().store("sse_results.idXML", protein_ids, peptide_ids)
-    # Storage of search results necessary in order to generate Prosit input (csv)
 
     # Generate input csv file for Prosit and start the run with already running Prosit server
-    generate_csv_file(peptide_ids)
+    generate_csv_file(peptide_ids, ce)
     prosit_command = "curl -F \"peptides=@prosit_input.csv\" " + server_ip + "/predict/generic > " \
                      "pred_ints.generic"
     os.system(prosit_command)
 
     # Generate calibrants, predict absolute RT and add as new meta value for all peptides
-    calibrants = create_calibration_data(peptide_ids)
+    peptide_ids_calinput = peptide_ids[:]
+    calibrants = create_calibration_data(peptide_ids_calinput)
     prot_ids, pep_ids = annotate_predictions(protein_ids, peptide_ids, predict(peptide_ids_to_dataframe(peptide_ids),
                                                                                calibrants))
 
@@ -137,7 +142,8 @@ def main():
     # Integrate predicted intensities to theoretical spectra
     theoretical_exp_intensities = integrate_intensities("pred_ints.generic", theoretical_exp, peptide_seqs)
 
-    # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
+    # Align experimental and theoretical spectra, add spectral angle, RT difference and absolute predicted RT as
+    # additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
     peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, prot_ids, pep_ids)
@@ -181,14 +187,14 @@ def sse_algorithm(searchfile: str, database: str, hits_per_spec: int):
     return protein_ids, peptide_ids
 
 
-def generate_csv_file(peptide_ids: list):
+def generate_csv_file(peptide_ids: list, ce: int):
     header = ['modified_sequence', 'collision_energy', 'precursor_charge']
 
     # Set file name
     file_name = "prosit_input.csv"
 
     # Set the collision energy
-    collision_energy = 27
+    collision_energy = ce
 
     with open(file_name, 'w') as f:
         writer = csv.writer(f)
@@ -543,12 +549,6 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
                 pred_RTval = float(hit.getMetaValue('prediction'))
                 rt_diff = abs(pred_RTval - pep.getRT())
 
-                # Compute mean squared error
-                #squared_diff = [(theo_int - exp_int) ** 2 for theo_int, exp_int in zip(v_theo, v_exp)]
-                #mse = 1.0 # If there are no matching peaks
-                #if len(alignment) > 0:
-                #    mse = sum(squared_diff) / len(alignment)
-
                 # Set SA, RT difference and absolute RT as additional meta values
                 hit.setMetaValue('spectral_angle', sa)
                 hit.setMetaValue('RT_difference', rt_diff)
@@ -567,7 +567,7 @@ def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
 
     # Define the command for the PercolatorAdapter run
     percadapter_command = percadapter_path + " -in " + sse_results + " -out sse_results_percolated.idXML " + \
-                          "-percolator_executable " + perc_path + " -out_pin sse_results_percolated.tab " + \
+                          "-percolator_executable " + perc_path + " -out_pin sse_results_percolated_pin.tab " + \
                           "-weights sse_results_percolated.weights -train_best_positive -score_type q-value "
 
     os.system(percadapter_command)

@@ -1,8 +1,8 @@
 # Already running Prosit server needed
 # Example command:
-# python basescript_XTandem_RT.py -input "searchfile.mzML" -database "TargDecoy.fasta"
-# -prosit_server_ip "http://x.x.x.x:xxxx" -openmstools_path ".../" -xtandem_path ".../tandem.exe"
-# -percolator_path ".../percolator" -output "output.idXML"
+# python script_idxml.py -input_mzML "searchfile.mzML" -input_idXML "searchresults.idXML"
+#   -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_path ".../percolator"
+#   -percolator_adapter_path ".../PercolatorAdapter" -output "output.idXML"
 
 import os
 from CTDopts.CTDopts import CTDModel
@@ -20,57 +20,31 @@ def main():
         version="1.0",
         description="Script for finding peptide candidates incorporating predicted theoretical peak intensities and"
                     "retention times (Spectral angle, RT difference and absolute pred. RT as additional meta values). "
-                    "Database search using X!Tandem (via XTandemAdapter). Rescoring with Percolator.",
+                    "Rescoring with Percolator.",
         docurl="",
         category="",
         executableName="",
         executablePath=""
     )
-    # Register input mzML
+
+    # Register input mzML search file
     model.add(
-        "input",
+        "input_mzML",
         required=True,
         type="input-file",
         is_list=False,
         file_formats=["mzml"],
-        description="Input file"
+        description="Input file (mzML format)"
     )
 
-    # Register target/decoy database fasta file for database search
+    # Register input idXML file
     model.add(
-        "database",
+        "input_idXML",
         required=True,
         type="input-file",
         is_list=False,
-        file_formats=["fasta"],
-        description="Target/Decoy database file"
-    )
-
-    # Register path to X!Tandem executable, needed by OpenMS tool XTandemAdapter
-    model.add(
-        "xtandem_path",
-        required=True,
-        type="string",
-        is_list=False,
-        description="Path to X!Tandem executable"
-    )
-
-    # Register path to directory including OpenMS tool executables in order to run the tools with os.system
-    model.add(
-        "openmstools_path",
-        required=True,
-        type="string",
-        is_list=False,
-        description="Path to OpenMS tool executables directory"
-    )
-
-    # Register number of top hits to keep for each spectrum
-    model.add(
-        "top_hits_per_spectrum",
-        required=False,
-        is_list=False,
-        default=1,
-        description="Number of top hits to keep for each spectrum. Default: 1."
+        file_formats=["idxml"],
+        description="Input file (idXML format)"
     )
 
     # Register normalized collision energy considered in the peak intensity prediction with Prosit
@@ -100,6 +74,15 @@ def main():
         description="Path to Percolator executable"
     )
 
+    # Register path to PercolatorAdapter executable in order to run it with os.system
+    model.add(
+        "percolator_adapter_path",
+        required=True,
+        type="string",
+        is_list=False,
+        description="Path to PercolatorAdapter executable"
+    )
+
     # Register output file name (FDR filtered idXML file)
     model.add(
         "output",
@@ -119,18 +102,19 @@ def main():
     arg_dict, openms_params = parseCTDCommandLine(sys.argv, model, defaults)
 
     # Set the arguments
-    searchfile = arg_dict["input"]
-    database = arg_dict["database"]
-    xtandem_path = arg_dict["xtandem_path"]
-    hits_per_spec = int(arg_dict["top_hits_per_spectrum"])
-    openmstools_path = arg_dict["openmstools_path"]
+    searchfile = arg_dict["input_mzML"]
+    idxmlfile = arg_dict["input_idXML"]
     ce = int(arg_dict["ce"])
     server_ip = arg_dict["prosit_server_ip"]
     perc_path = arg_dict["percolator_path"]
+    percadapter_path = arg_dict["percolator_adapter_path"]
     outfile = arg_dict["output"]
 
     # Run the database search on experimental spectra, store results to idXML file
-    protein_ids, peptide_ids = xtandem_algorithm(searchfile, database, xtandem_path, openmstools_path, hits_per_spec)
+    protein_ids = []
+    peptide_ids = []
+    IdXMLFile().load(idxmlfile, protein_ids, peptide_ids)
+    # Storage of search results necessary in order to generate Prosit input (csv)
 
     # Generate input csv file for Prosit and start the run with already running Prosit server
     generate_csv_file(peptide_ids, ce)
@@ -138,7 +122,7 @@ def main():
                      "pred_ints.generic"
     os.system(prosit_command)
 
-    # Generate calibrants, predict absolute RT and add as new meta value for all peptides
+    # Generate calibrants, predict absolute RT and add it with RT difference as new meta values for all peptides
     peptide_ids_calinput = peptide_ids[:]
     calibrants = create_calibration_data(peptide_ids_calinput)
     prot_ids, pep_ids = annotate_predictions(protein_ids, peptide_ids, predict(peptide_ids_to_dataframe(peptide_ids),
@@ -150,73 +134,21 @@ def main():
     # Integrate predicted intensities to theoretical spectra
     theoretical_exp_intensities = integrate_intensities("pred_ints.generic", theoretical_exp, peptide_seqs)
 
-    # Align experimental and theoretical spectra, add spectral angle, RT difference and absolute predicted RT as
-    # additional meta values
+    # Align experimental and theoretical spectra, add spectral angle and MSE as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
     peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, prot_ids, pep_ids)
-    xtandem_res_add_vals_file = "xtandem_results_add_vals.idXML"
-    IdXMLFile().store(xtandem_res_add_vals_file, prot_ids, peptide_ids_add_vals)
+    res_add_vals_file = "results_add_vals.idXML"
+    IdXMLFile().store(res_add_vals_file, prot_ids, peptide_ids_add_vals)
 
-    # Add X!Tandem specific features and run PercolatorAdapter
-    perc_protein_ids, perc_peptide_ids = run_percolator(xtandem_res_add_vals_file, perc_path, openmstools_path)
+    # Run PercolatorAdapter
+    perc_protein_ids, perc_peptide_ids = run_percolator(res_add_vals_file, perc_path, percadapter_path)
 
     # FDR filtering
     perc_peptide_ids_filtered = fdr_filtering(perc_peptide_ids)
 
     # Store result
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
-
-
-def xtandem_algorithm(searchfile: str, database: str, xtandem_path: str, openmstools_path: str, hits_per_spec: int):
-    # Run XTandem! using XTandemAdapter, store protein and peptide ids
-
-    xtandem_outfile = "xtandem_results.idXML"
-    xtandemadapter_path = openmstools_path + "XTandemAdapter"
-
-    # Set and execute XTandemAdapter command
-    xtandem_command = xtandemadapter_path + " -in " + searchfile + " -out " + xtandem_outfile + " -database " \
-                      + database + " -xtandem_executable " + xtandem_path + \
-                      " -fragment_mass_tolerance '10.0' -fragment_error_units 'ppm'"
-
-    os.system(xtandem_command)
-
-    protein_ids = []
-    peptide_ids = []
-    IdXMLFile().load(xtandem_outfile, protein_ids, peptide_ids)
-
-    # Keep only top hit per spectrum
-    idfilter = IDFilter()
-    idfilter.keepNBestHits(peptide_ids, hits_per_spec)
-
-    # Filter peptides showing modifications that are not supported by Prosit
-    mods = ['Acetyl', 'Glu->pyro-Glu', 'Gln->pyro-Glu', 'Ammonia-loss']
-
-    for p in peptide_ids:
-        hits = []
-        for hit in p.getHits():
-            if not any(mod in str(hit.getSequence()) for mod in mods) and len(
-                    hit.getSequence().toUnmodifiedString()) <= 30:
-                hits.append(hit)
-        p.setHits(hits)
-
-    # Peptide indexing
-    # Load database file
-    fasta_file = FASTAFile()
-    fasta_filename = database
-    fasta_entries = []
-    fasta_file.load(fasta_filename, fasta_entries)
-
-    # annotate peptides with proteins
-    indexer = PeptideIndexing()
-    indexer_param = indexer.getParameters()
-    indexer_param.setValue("tolerance", 0.05)
-    indexer.setParameters(indexer_param)
-    indexer.run(fasta_entries, protein_ids, peptide_ids)
-
-    IdXMLFile().store(xtandem_outfile, protein_ids, peptide_ids)
-
-    return protein_ids, peptide_ids
 
 
 def generate_csv_file(peptide_ids: list, ce: int):
@@ -245,11 +177,11 @@ def generate_csv_file(peptide_ids: list, ce: int):
                 # Remove (Carbamidomethyl) notation after cysteins, since each C is treated as C with carbamidomethylation
                 sequence = sequence.replace("(Carbamidomethyl)", "")
 
-                # Prosit error for charges > 3
+                row = [sequence, collision_energy, h.getCharge()]
+
+                # Prosit error for charges > 3 (Occurred for MSGF+ and XTandem! generated idXML)
                 if h.getCharge() > 3:
                     continue
-
-                row = [sequence, collision_energy, h.getCharge()]
 
                 # Write respective row to csv file
                 writer.writerow(row)
@@ -585,6 +517,12 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
                 pred_RTval = float(hit.getMetaValue('prediction'))
                 rt_diff = abs(pred_RTval - pep.getRT())
 
+                # Compute mean squared error
+                #squared_diff = [(theo_int - exp_int) ** 2 for theo_int, exp_int in zip(v_theo, v_exp)]
+                #mse = 1.0 # If there are no matching peaks
+                #if len(alignment) > 0:
+                #    mse = sum(squared_diff) / len(alignment)
+
                 # Set SA, RT difference and absolute RT as additional meta values
                 hit.setMetaValue('spectral_angle', sa)
                 hit.setMetaValue('RT_difference', rt_diff)
@@ -599,23 +537,12 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     return peptide_ids
 
 
-def run_percolator(xtandem_res_add_vals_file: str, perc_path: str, openmstools_path: str):
-    # Add X!Tandem specific features
-    psmfeatureextractor_path = openmstools_path + "PSMFeatureExtractor"
-    xtandem_all_features_added = "xtandem_all_features_added.idXML"
-
-    psmfeats_command = psmfeatureextractor_path + " -in " + xtandem_res_add_vals_file + " -out " + \
-                       xtandem_all_features_added + " -extra spectral_angle RT_difference RT_predicted"
-    os.system(psmfeats_command)
-
+def run_percolator(idxmlfile: str, perc_path: str, percadapter_path: str):
 
     # Define the command for the PercolatorAdapter run
-    percadapter_path = openmstools_path + "PercolatorAdapter"
-
-    percadapter_command = percadapter_path + " -in " + xtandem_all_features_added + \
-                          " -out xtandem_results_percolated.idXML -percolator_executable " + perc_path + \
-                          " -out_pin xtandem_results_percolated_pin.tab " + \
-                          "-weights xtandem_results_percolated.weights -train_best_positive -score_type q-value"
+    percadapter_command = percadapter_path + " -in " + idxmlfile + " -out results_percolated.idXML " + \
+                          "-percolator_executable " + perc_path + " -out_pin results_percolated.tab " + \
+                          "-weights results_percolated.weights -train_best_positive -score_type q-value "
 
     os.system(percadapter_command)
 
@@ -623,7 +550,7 @@ def run_percolator(xtandem_res_add_vals_file: str, perc_path: str, openmstools_p
     perc_protein_ids = []
     perc_peptide_ids = []
 
-    IdXMLFile().load("xtandem_results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
+    IdXMLFile().load("results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
 
     return perc_protein_ids, perc_peptide_ids
 
