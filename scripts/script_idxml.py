@@ -3,6 +3,10 @@
 # python script_idxml.py -input_mzML "searchfile.mzML" -input_idXML "searchresults.idXML"
 #   -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_path ".../percolator"
 #   -percolator_adapter_path ".../PercolatorAdapter" -output "output.idXML"
+# Optional parameters:
+#   -ce (int) collision energy considered in Prosit run (default: 27)
+#   -runPSMFeatureExtractor
+#       Enable if used db search engine is supported by PSMFeatureExtractor for adding search engine specific features
 
 import os
 from CTDopts.CTDopts import CTDModel
@@ -52,6 +56,7 @@ def main():
         "ce",
         required=False,
         is_list=False,
+        type="int",
         default=27,
         description="Collision energy considered in peak intensity prediction (Prosit). Default: 27"
     )
@@ -83,6 +88,16 @@ def main():
         description="Path to PercolatorAdapter executable"
     )
 
+    # Register if PSMFeatureExtractor should be run for adding search engine specific features
+    model.add(
+        "runPSMFeatureExtractor",
+        required=False,
+        is_list=False,
+        type="boolean",
+        default='False',
+        description="Optionally enable PSMFeatureExtractor"
+    )
+
     # Register output file name (FDR filtered idXML file)
     model.add(
         "output",
@@ -108,6 +123,7 @@ def main():
     server_ip = arg_dict["prosit_server_ip"]
     perc_path = arg_dict["percolator_path"]
     percadapter_path = arg_dict["percolator_adapter_path"]
+    extract_features = arg_dict["runPSMFeatureExtractor"]
     outfile = arg_dict["output"]
 
     # Run the database search on experimental spectra, store results to idXML file
@@ -142,7 +158,8 @@ def main():
     IdXMLFile().store(res_add_vals_file, prot_ids, peptide_ids_add_vals)
 
     # Run PercolatorAdapter
-    perc_protein_ids, perc_peptide_ids = run_percolator(res_add_vals_file, perc_path, percadapter_path)
+    perc_protein_ids, perc_peptide_ids = run_percolator(res_add_vals_file, perc_path, percadapter_path,
+                                                        extract_features)
 
     # FDR filtering
     perc_peptide_ids_filtered = fdr_filtering(perc_peptide_ids)
@@ -537,14 +554,28 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     return peptide_ids
 
 
-def run_percolator(idxmlfile: str, perc_path: str, percadapter_path: str):
+def run_percolator(idxmlfile: str, perc_path: str, percadapter_path: str, extract_features: bool):
+    # Run PSMFeatureExtractor if enabled
+    if bool(extract_features):
+        psmfeatextractor_path = percadapter_path.replace("PercolatorAdapter", "PSMFeatureExtractor")
+        specific_feats_added = "specific_features_added.idXML"
 
-    # Define the command for the PercolatorAdapter run
-    percadapter_command = percadapter_path + " -in " + idxmlfile + " -out results_percolated.idXML " + \
-                          "-percolator_executable " + perc_path + " -out_pin results_percolated.tab " + \
-                          "-weights results_percolated.weights -train_best_positive -score_type q-value "
+        psmfeats_command = psmfeatextractor_path + " -in " + idxmlfile + " -out " + \
+                           specific_feats_added + " -extra spectral_angle RT_difference RT_predicted"
+        os.system(psmfeats_command)
 
-    os.system(percadapter_command)
+        # Define the command for the PercolatorAdapter run
+        percadapter_command = percadapter_path + " -in " + specific_feats_added + " -out results_percolated.idXML " + \
+                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
+                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
+        os.system(percadapter_command)
+    else:
+        # Define the command for the PercolatorAdapter run
+        percadapter_command = percadapter_path + " -in " + idxmlfile + " -out results_percolated.idXML " + \
+                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
+                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
+
+        os.system(percadapter_command)
 
     # Load the new ids
     perc_protein_ids = []
