@@ -1,19 +1,17 @@
-# pyTOPP_Rescorer
+# pyTOPP_Rescorer_SSE
 # Tobias Nietsch
 # 23.12.2021
 
 # Already running Prosit server needed
 # Example command:
-# python script_idxml.py -input_mzML "searchfile.mzML" -input_idXML "searchresults.idXML"
-#   -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_path ".../percolator"
-#   -percolator_adapter_path ".../PercolatorAdapter" -output "output.idXML"
+# python basescript_SSE_RT.py -input "searchfile.mzML" -database "TargDecoy.fasta"
+# -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_adapter_path ".../PercolatorAdapter"
+# -percolator_path ".../percolator" -output "output.idXML"
 # Optional parameters:
 #   -ce (int) collision energy considered in Prosit run (default: 27)
-#   -runPSMFeatureExtractor
-#       Enable if used db search engine is supported by PSMFeatureExtractor for adding search engine specific features
+#   -top_hits_per_spectrum (int) number of top hits to keep for each spectrum (default: 1)
 
 import os
-import sys
 from CTDopts.CTDopts import CTDModel
 from CTDsupport import *
 from pyopenms import *
@@ -25,35 +23,45 @@ def main():
 
     # Register command line arguments
     model = CTDModel(
-        name="pyTOPP_Rescorer",
+        name="pyTOPP_Rescorer_SSE",
         version="1.0",
         description="Tool for identifying peptides by incorporating predicted theoretical peak intensities and"
                     "retention times (Spectral angle, RT difference and absolute pred. RT as additional meta values)."
-                    "Rescoring with Percolator.",
+                    "Database search using Simple Search Engine Algorithm. Rescoring with Percolator.",
         docurl="",
         category="",
         executableName="",
         executablePath=""
     )
 
-    # Register input mzML search file
+    # Register input mzML file
     model.add(
-        "input_mzML",
+        "input",
         required=True,
         type="input-file",
         is_list=False,
         file_formats=["mzml"],
-        description="Input file (mzML format)"
+        description="Input file"
     )
 
-    # Register input idXML file
+    # Register target/decoy database fasta file for database search
     model.add(
-        "input_idXML",
+        "database",
         required=True,
         type="input-file",
         is_list=False,
-        file_formats=["idxml"],
-        description="Input file (idXML format)"
+        file_formats=["fasta"],
+        description="Target/Decoy database file"
+    )
+
+    # Register number of top hits to keep for each spectrum
+    model.add(
+        "top_hits_per_spectrum",
+        required=False,
+        is_list=False,
+        type="int",
+        default=1,
+        description="Number of top hits to keep for each spectrum. Default: 1"
     )
 
     # Register normalized collision energy (NCE) considered in the peak intensity prediction with Prosit
@@ -93,16 +101,6 @@ def main():
         description="Path to PercolatorAdapter executable"
     )
 
-    # Register if PSMFeatureExtractor should be run for adding search engine specific features. Default: disabled
-    model.add(
-        "runPSMFeatureExtractor",
-        required=False,
-        is_list=False,
-        type="boolean",
-        default='False',
-        description="Optionally enable PSMFeatureExtractor"
-    )
-
     # Register output file name (FDR filtered idXML file)
     model.add(
         "output",
@@ -122,25 +120,25 @@ def main():
     arg_dict, openms_params = parseCTDCommandLine(sys.argv, model, defaults)
 
     # Set the arguments
-    searchfile = arg_dict["input_mzML"]
-    idxmlfile = arg_dict["input_idXML"]
+    searchfile = arg_dict["input"]
+    database = arg_dict["database"]
+    hits_per_spec = arg_dict["top_hits_per_spectrum"]
     ce = arg_dict["ce"]
     server_ip = arg_dict["prosit_server_ip"]
     perc_path = arg_dict["percolator_path"]
     percadapter_path = arg_dict["percolator_adapter_path"]
-    extract_features = arg_dict["runPSMFeatureExtractor"]
     outfile = arg_dict["output"]
 
-    # Load database search results
-    protein_ids = []
-    peptide_ids = []
-    IdXMLFile().load(idxmlfile, protein_ids, peptide_ids)
+    # Run the database search on experimental spectra, store results to idXML file
+    protein_ids, peptide_ids = sse_algorithm(searchfile, database, hits_per_spec)
+    IdXMLFile().store("sse_results.idXML", protein_ids, peptide_ids)
 
     sys.stdout.write("\nStart Prosit ...\n\n")
 
-    # Generate input csv file for Prosit and start the process with already running Prosit server
+    # Generate input csv file for Prosit and start the run with already running Prosit server
     generate_csv_file(peptide_ids, ce)
-    prosit_command = "curl -F \"peptides=@prosit_input.csv\" " + server_ip + "/predict/generic > pred_ints.generic"
+    prosit_command = "curl -F \"peptides=@prosit_input.csv\" " + server_ip + "/predict/generic > " \
+                     "pred_ints.generic"
     os.system(prosit_command)
 
     sys.stdout.write("\nStart RT prediction with DeepLC  ...\n\n")
@@ -153,7 +151,7 @@ def main():
 
     sys.stdout.write("\nGenerate Theoretical spectra ...\n")
 
-    # Generate theoretical spectra for peptides found in the database search
+    # Generate theoretical spectra for the hits found by database search
     theoretical_exp, peptide_seqs = theoretical_spectra(pep_ids)
 
     # Integrate predicted intensities to theoretical spectra
@@ -161,24 +159,60 @@ def main():
 
     sys.stdout.write("\nRun Spectrum Alignment ...\n")
 
-    # Align experimental and theoretical spectra, add SA, RT difference and absolute RT as additional meta values
+    # Align experimental and theoretical spectra, add SA, RT difference and absolute pred. RT as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
     peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, prot_ids, pep_ids)
-    res_add_vals_file = "results_add_vals.idXML"
-    IdXMLFile().store(res_add_vals_file, prot_ids, peptide_ids_add_vals)
+    sse_res_add_vals_file = "sse_results_add_vals.idXML"
+    IdXMLFile().store(sse_res_add_vals_file, prot_ids, peptide_ids_add_vals)
 
     sys.stdout.write("\n")
 
     # Run PercolatorAdapter
-    perc_protein_ids, perc_peptide_ids = run_percolator(res_add_vals_file, perc_path, percadapter_path,
-                                                        extract_features)
+    perc_protein_ids, perc_peptide_ids = run_percolator(sse_res_add_vals_file, perc_path, percadapter_path)
 
     # FDR filtering
     perc_peptide_ids_filtered = fdr_filtering(perc_peptide_ids)
 
     # Write out result to output file
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
+
+
+def sse_algorithm(searchfile: str, database: str, hits_per_spec: int):
+    """
+    Run Simple Search Engine (SSE), return resulting protein and peptide identifications
+    Args:
+        searchfile: mzML input file
+        database: target/decoy database to be used in the database search
+        hits_per_spec: number of hits to be kept for each spectrum
+    Returns:
+        protein_ids: protein identifications
+        peptide_ids: peptide identifications
+    """
+
+    protein_ids = []
+    peptide_ids = []
+
+    # Enable additional score annotations
+    simplesearch = SimpleSearchEngineAlgorithm()
+    params = simplesearch.getDefaults()
+
+    # If an error concerning this parameter occurs, please update your pyopenms library
+    score_annot = [b'fragment_mz_error_median_ppm', b'precursor_mz_error_ppm', b'matched_prefix_ions_fraction',
+                   b'matched_suffix_ions_fraction']
+    params.setValue(b'annotate:PSM', score_annot)
+
+    # Only include peptides of up to 30 amino acids (Prosit limit)
+    params.setValue(b'peptide:max_size', 30)
+
+    # Report (up to) top x scoring hits per spectrum
+    params.setValue(b'report:top_hits', hits_per_spec)
+
+    simplesearch.setParameters(params)
+
+    simplesearch.search(searchfile, database, protein_ids, peptide_ids)
+
+    return protein_ids, peptide_ids
 
 
 def generate_csv_file(peptide_ids: list, ce: int):
@@ -214,10 +248,6 @@ def generate_csv_file(peptide_ids: list, ce: int):
                 sequence = sequence.replace("(Carbamidomethyl)", "")
 
                 row = [sequence, ce, h.getCharge()]
-
-                # Omit Prosit error for charges > 3 (May occur for MSGF+ and XTandem! results)
-                if h.getCharge() > 3:
-                    continue
 
                 # Write respective row to csv file
                 writer.writerow(row)
@@ -377,7 +407,6 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment, pepti
         ints_added_exp: theoretical spectra object with integrated predicted intensities
     """
 
-    # Parse Prosit output
     df = pd.read_csv(generic_out)
 
     # Get all rows (i.e. ions) associated with a hit and store them as an element in a list in order to have a better
@@ -417,7 +446,6 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment, pepti
         # Retain the StringDataArrays() after set_peaks call in order to access the ion names during spectrum alignment
         s_array = s.getStringDataArrays()
 
-        # Catch the case that no ions were predicted for a peptide sequence
         if predicted_peaks[pred_idx][0]['StrippedPeptide'] != peptide_seqs[s_idx]:
             s_idx += 1
 
@@ -595,47 +623,30 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     return peptide_ids
 
 
-def run_percolator(infile: str, perc_path: str, percadapter_path: str, extract_features: bool):
+def run_percolator(sse_results: str, perc_path: str, percadapter_path: str):
     """
     Perform rescoring with Percolator
-    Additionally generate search engine specific features if engine supported by OpenMS PSMFeatureExtractor
     Args:
-        infile: path tho idXML file containing identifications with added meta values
+        sse_results: path tho idXML file containing identifications with added meta values
         perc_path: path to Percolator executable
         percadapter_path: path to OpenMS PercolatorAdapter
-        extract_features: decide if PSMFeatureExtractor is applied prior to Percolator
     Returns:
         perc_protein_ids: protein identifications after Percolator run
         perc_peptide_ids: peptide identifications after Percolator run
     """
 
-    # Run PSMFeatureExtractor if enabled
-    if bool(extract_features):
-        psmfeatextractor_path = percadapter_path.replace("PercolatorAdapter", "PSMFeatureExtractor")
-        specific_feats_added_file = "specific_features_added.idXML"
+    # Define the command for the PercolatorAdapter run
+    percadapter_command = percadapter_path + " -in " + sse_results + " -out sse_results_percolated.idXML " + \
+                          "-percolator_executable " + perc_path + " -out_pin sse_results_percolated_pin.tab " + \
+                          "-weights sse_results_percolated.weights -train_best_positive -score_type q-value "
 
-        psmfeats_command = psmfeatextractor_path + " -in " + infile + " -out " + \
-                           specific_feats_added_file + " -extra spectral_angle RT_difference RT_predicted"
-        os.system(psmfeats_command)
-
-        # Define the command for the PercolatorAdapter run
-        percadapter_command = percadapter_path + " -in " + specific_feats_added_file + " -out results_percolated.idXML " + \
-                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
-                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
-        os.system(percadapter_command)
-    else:
-        # Define the command for the PercolatorAdapter run
-        percadapter_command = percadapter_path + " -in " + infile + " -out results_percolated.idXML " + \
-                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
-                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
-
-        os.system(percadapter_command)
+    os.system(percadapter_command)
 
     # Load the new ids
     perc_protein_ids = []
     perc_peptide_ids = []
 
-    IdXMLFile().load("results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
+    IdXMLFile().load("sse_results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
 
     return perc_protein_ids, perc_peptide_ids
 

@@ -1,19 +1,17 @@
-# pyTOPP_Rescorer
+# pyTOPP_Rescorer_MSGF
 # Tobias Nietsch
 # 23.12.2021
 
 # Already running Prosit server needed
 # Example command:
-# python script_idxml.py -input_mzML "searchfile.mzML" -input_idXML "searchresults.idXML"
-#   -prosit_server_ip "http://x.x.x.x:xxxx" -percolator_path ".../percolator"
-#   -percolator_adapter_path ".../PercolatorAdapter" -output "output.idXML"
+# python basescript_MSGF_RT.py -input "searchfile.mzML" -database "TargDecoy.fasta"
+# -prosit_server_ip "http://x.x.x.x:xxxx" -openmstools_path ".../" -msgfplus_path ".../MSGFPlus.jar"
+# -percolator_path ".../percolator" -output "output.idXML"
 # Optional parameters:
 #   -ce (int) collision energy considered in Prosit run (default: 27)
-#   -runPSMFeatureExtractor
-#       Enable if used db search engine is supported by PSMFeatureExtractor for adding search engine specific features
+#   -top_hits_per_spectrum (int) number of top hits to keep for each spectrum (default: 1)
 
 import os
-import sys
 from CTDopts.CTDopts import CTDModel
 from CTDsupport import *
 from pyopenms import *
@@ -25,35 +23,62 @@ def main():
 
     # Register command line arguments
     model = CTDModel(
-        name="pyTOPP_Rescorer",
+        name="ML4ProtID",
         version="1.0",
         description="Tool for identifying peptides by incorporating predicted theoretical peak intensities and"
                     "retention times (Spectral angle, RT difference and absolute pred. RT as additional meta values)."
-                    "Rescoring with Percolator.",
+                    "Database search using MSGF+ (via MSGFPlusAdapter). Rescoring with Percolator.",
         docurl="",
         category="",
         executableName="",
         executablePath=""
     )
 
-    # Register input mzML search file
+    # Register input mzML file
     model.add(
-        "input_mzML",
+        "input",
         required=True,
         type="input-file",
         is_list=False,
         file_formats=["mzml"],
-        description="Input file (mzML format)"
+        description="Input file"
     )
 
-    # Register input idXML file
+    # Register target/decoy database fasta file for database search
     model.add(
-        "input_idXML",
+        "database",
         required=True,
         type="input-file",
         is_list=False,
-        file_formats=["idxml"],
-        description="Input file (idXML format)"
+        file_formats=["fasta"],
+        description="Target/Decoy database file"
+    )
+
+    # Register path to MSGF+ executable, required by OpenMS MSGFPlusAdapter
+    model.add(
+        "msgfplus_path",
+        required=True,
+        type="string",
+        is_list=False,
+        description="Path to MSGF+ executable"
+    )
+
+    # Register path to directory including OpenMS tool executables in order to run the tools with os.system
+    model.add(
+        "openmstools_path",
+        required=True,
+        type="string",
+        is_list=False,
+        description="Path to OpenMS tool executables directory"
+    )
+
+    # Register number of top hits to keep for each spectrum
+    model.add(
+        "top_hits_per_spectrum",
+        required=False,
+        is_list=False,
+        default=1,
+        description="Number of top hits to keep for each spectrum. Default: 1."
     )
 
     # Register normalized collision energy (NCE) considered in the peak intensity prediction with Prosit
@@ -84,25 +109,6 @@ def main():
         description="Path to Percolator executable"
     )
 
-    # Register path to PercolatorAdapter executable in order to run it with os.system
-    model.add(
-        "percolator_adapter_path",
-        required=True,
-        type="string",
-        is_list=False,
-        description="Path to PercolatorAdapter executable"
-    )
-
-    # Register if PSMFeatureExtractor should be run for adding search engine specific features. Default: disabled
-    model.add(
-        "runPSMFeatureExtractor",
-        required=False,
-        is_list=False,
-        type="boolean",
-        default='False',
-        description="Optionally enable PSMFeatureExtractor"
-    )
-
     # Register output file name (FDR filtered idXML file)
     model.add(
         "output",
@@ -122,25 +128,25 @@ def main():
     arg_dict, openms_params = parseCTDCommandLine(sys.argv, model, defaults)
 
     # Set the arguments
-    searchfile = arg_dict["input_mzML"]
-    idxmlfile = arg_dict["input_idXML"]
+    searchfile = arg_dict["input"]
+    database = arg_dict["database"]
+    msgfplus_path = arg_dict["msgfplus_path"]
+    openmstools_path = arg_dict["openmstools_path"]
+    hits_per_spec = str(arg_dict["top_hits_per_spectrum"])
     ce = arg_dict["ce"]
     server_ip = arg_dict["prosit_server_ip"]
     perc_path = arg_dict["percolator_path"]
-    percadapter_path = arg_dict["percolator_adapter_path"]
-    extract_features = arg_dict["runPSMFeatureExtractor"]
     outfile = arg_dict["output"]
 
-    # Load database search results
-    protein_ids = []
-    peptide_ids = []
-    IdXMLFile().load(idxmlfile, protein_ids, peptide_ids)
+    # Run the database search on experimental spectra, store results to idXML file
+    protein_ids, peptide_ids = msgf_algorithm(searchfile, database, msgfplus_path, openmstools_path, hits_per_spec)
 
     sys.stdout.write("\nStart Prosit ...\n\n")
 
-    # Generate input csv file for Prosit and start the process with already running Prosit server
+    # Generate input csv file for Prosit and start the run with already running Prosit server
     generate_csv_file(peptide_ids, ce)
-    prosit_command = "curl -F \"peptides=@prosit_input.csv\" " + server_ip + "/predict/generic > pred_ints.generic"
+    prosit_command = "curl -F \"peptides=@prosit_input.csv\" " + server_ip + "/predict/generic > " \
+                     "pred_ints.generic"
     os.system(prosit_command)
 
     sys.stdout.write("\nStart RT prediction with DeepLC  ...\n\n")
@@ -153,7 +159,7 @@ def main():
 
     sys.stdout.write("\nGenerate Theoretical spectra ...\n")
 
-    # Generate theoretical spectra for peptides found in the database search
+    # Generate theoretical spectra for the hits found by database search
     theoretical_exp, peptide_seqs = theoretical_spectra(pep_ids)
 
     # Integrate predicted intensities to theoretical spectra
@@ -161,24 +167,72 @@ def main():
 
     sys.stdout.write("\nRun Spectrum Alignment ...\n")
 
-    # Align experimental and theoretical spectra, add SA, RT difference and absolute RT as additional meta values
+    # Align experimental and theoretical spectra, add SA, RT difference and absolute pred. RT as additional meta values
     experimental_exp = MSExperiment()
     MzMLFile().load(searchfile, experimental_exp)
     peptide_ids_add_vals = spectrum_alignment(experimental_exp, theoretical_exp_intensities, prot_ids, pep_ids)
-    res_add_vals_file = "results_add_vals.idXML"
-    IdXMLFile().store(res_add_vals_file, prot_ids, peptide_ids_add_vals)
+    msgf_res_add_vals_file = "msgf_results_add_vals.idXML"
+    IdXMLFile().store(msgf_res_add_vals_file, prot_ids, peptide_ids_add_vals)
 
     sys.stdout.write("\n")
 
-    # Run PercolatorAdapter
-    perc_protein_ids, perc_peptide_ids = run_percolator(res_add_vals_file, perc_path, percadapter_path,
-                                                        extract_features)
+    # Add MSGF+ specific features and run PercolatorAdapter
+    perc_protein_ids, perc_peptide_ids = run_percolator(msgf_res_add_vals_file, perc_path, openmstools_path)
 
     # FDR filtering
     perc_peptide_ids_filtered = fdr_filtering(perc_peptide_ids)
 
     # Write out result to output file
     IdXMLFile().store(outfile, perc_protein_ids, perc_peptide_ids_filtered)
+
+
+def msgf_algorithm(searchfile: str, database: str, msgfplus_path: str, openmstools_path: str, hits_per_spec: str):
+    """
+    Run MSGF+ using MSGFPlusAdapter, annotate peptides with proteins,
+    store and return resulting protein and peptide identifications
+    Args:
+        searchfile: mzML input file
+        database: target/decoy database to be used in the database search
+        msgfplus_path: path the MSGF+ executable
+        openmstools_path: path to directory containing OpenMS tool executables
+        hits_per_spec: number of hits to be kept for each spectrum
+    Returns:
+        protein_ids: protein identifications
+        peptide_ids: peptide identifications
+    """
+
+    # Set path for results outfile
+    msgf_outfile = "msgf_results.idXML"
+
+    msgfplusadapter_path = openmstools_path + "MSGFPlusAdapter"
+
+    # Set and execute MSGFPlusAdapter command
+    msgf_command = msgfplusadapter_path + " -in " + searchfile + " -out " + msgf_outfile + " -executable " \
+                   + msgfplus_path + " -database " + database + " -min_peptide_length '7' -max_peptide_length '30'" \
+                                                                " -matches_per_spec " + hits_per_spec
+
+    os.system(msgf_command)
+
+    protein_ids = []
+    peptide_ids = []
+    IdXMLFile().load(msgf_outfile, protein_ids, peptide_ids)
+
+    # Peptide indexing
+    # Load database file
+    fasta_file = FASTAFile()
+    fasta_filename = database
+    fasta_entries = []
+    fasta_file.load(fasta_filename, fasta_entries)
+
+    # Annotate peptides with proteins
+    indexer = PeptideIndexing()
+    indexer_param = indexer.getParameters()
+    indexer.setParameters(indexer_param)
+    indexer.run(fasta_entries, protein_ids, peptide_ids)
+
+    IdXMLFile().store(msgf_outfile, protein_ids, peptide_ids)
+
+    return protein_ids, peptide_ids
 
 
 def generate_csv_file(peptide_ids: list, ce: int):
@@ -209,15 +263,15 @@ def generate_csv_file(peptide_ids: list, ce: int):
                 # Adjust needed notation for oxidation (other modifications are not supported)
                 sequence = sequence.replace("Oxidation", "ox")
 
-                # Remove (Carbamidomethyl) notation after cysteins, since each C is treated as C with
-                # carbamidomethylation
+                # Remove (Carbamidomethyl) notation after cysteins, since each C is treated as C
+                # with carbamidomethylation
                 sequence = sequence.replace("(Carbamidomethyl)", "")
 
-                row = [sequence, ce, h.getCharge()]
-
-                # Omit Prosit error for charges > 3 (May occur for MSGF+ and XTandem! results)
+                # Prosit error for charges > 3
                 if h.getCharge() > 3:
                     continue
+
+                row = [sequence, ce, h.getCharge()]
 
                 # Write respective row to csv file
                 writer.writerow(row)
@@ -377,7 +431,6 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment, pepti
         ints_added_exp: theoretical spectra object with integrated predicted intensities
     """
 
-    # Parse Prosit output
     df = pd.read_csv(generic_out)
 
     # Get all rows (i.e. ions) associated with a hit and store them as an element in a list in order to have a better
@@ -417,7 +470,6 @@ def integrate_intensities(generic_out: str, theoretical_exp: MSExperiment, pepti
         # Retain the StringDataArrays() after set_peaks call in order to access the ion names during spectrum alignment
         s_array = s.getStringDataArrays()
 
-        # Catch the case that no ions were predicted for a peptide sequence
         if predicted_peaks[pred_idx][0]['StrippedPeptide'] != peptide_seqs[s_idx]:
             s_idx += 1
 
@@ -595,47 +647,41 @@ def spectrum_alignment(experimental_exp: MSExperiment, theoretical_exp_intensiti
     return peptide_ids
 
 
-def run_percolator(infile: str, perc_path: str, percadapter_path: str, extract_features: bool):
+def run_percolator(msgf_res_add_vals_file: str, perc_path: str, openmstools_path: str):
     """
-    Perform rescoring with Percolator
-    Additionally generate search engine specific features if engine supported by OpenMS PSMFeatureExtractor
+    Add MSGF+ specific features, perform rescoring with Percolator
     Args:
-        infile: path tho idXML file containing identifications with added meta values
+        msgf_res_add_vals_file: path tho idXML file containing identifications with added meta values
         perc_path: path to Percolator executable
-        percadapter_path: path to OpenMS PercolatorAdapter
-        extract_features: decide if PSMFeatureExtractor is applied prior to Percolator
+        openmstools_path: path to directory containing OpenMS tool executables
     Returns:
         perc_protein_ids: protein identifications after Percolator run
         perc_peptide_ids: peptide identifications after Percolator run
     """
 
-    # Run PSMFeatureExtractor if enabled
-    if bool(extract_features):
-        psmfeatextractor_path = percadapter_path.replace("PercolatorAdapter", "PSMFeatureExtractor")
-        specific_feats_added_file = "specific_features_added.idXML"
+    # Add MSGF+ specific features
+    psmfeatureextractor_path = openmstools_path + "PSMFeatureExtractor"
+    msgf_all_features_added = "msgf_all_features_added.idXML"
 
-        psmfeats_command = psmfeatextractor_path + " -in " + infile + " -out " + \
-                           specific_feats_added_file + " -extra spectral_angle RT_difference RT_predicted"
-        os.system(psmfeats_command)
+    psmfeats_command = psmfeatureextractor_path + " -in " + msgf_res_add_vals_file + " -out " + \
+                       msgf_all_features_added + " -extra spectral_angle RT_difference RT_predicted"
+    os.system(psmfeats_command)
 
-        # Define the command for the PercolatorAdapter run
-        percadapter_command = percadapter_path + " -in " + specific_feats_added_file + " -out results_percolated.idXML " + \
-                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
-                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
-        os.system(percadapter_command)
-    else:
-        # Define the command for the PercolatorAdapter run
-        percadapter_command = percadapter_path + " -in " + infile + " -out results_percolated.idXML " + \
-                              "-percolator_executable " + perc_path + " -out_pin results_percolated_pin.tab " + \
-                              "-weights results_percolated.weights -train_best_positive -score_type q-value "
+    # Define the command for the PercolatorAdapter run
+    percadapter_path = openmstools_path + "PercolatorAdapter"
 
-        os.system(percadapter_command)
+    percadapter_command = percadapter_path + " -in " + msgf_all_features_added + \
+                          " -out msgf_results_percolated.idXML -percolator_executable " + perc_path + \
+                          " -out_pin msgf_results_percolated_pin.tab" + \
+                          " -weights msgf_results_percolated.weights -train_best_positive -score_type q-value "
+
+    os.system(percadapter_command)
 
     # Load the new ids
     perc_protein_ids = []
     perc_peptide_ids = []
 
-    IdXMLFile().load("results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
+    IdXMLFile().load("msgf_results_percolated.idXML", perc_protein_ids, perc_peptide_ids)
 
     return perc_protein_ids, perc_peptide_ids
 
